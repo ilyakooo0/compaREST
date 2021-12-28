@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [master]
   release:
-    types: [prereleased]
+    types: [created]
 
 jobs:
   check_versions:
