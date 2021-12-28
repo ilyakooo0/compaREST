@@ -5,52 +5,168 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  release:
+    types: [prereleased]
 
 jobs:
-  build-github-action-image:
+  Linux:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v2
         with:
           submodules: recursive
-      - name: Increase swap
-        run: |
-          free -h
 
-          sudo swapoff /mnt/swapfile
-          sudo fallocate -l 12G /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-
-          free -h
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v12
+      - name: Common setup
+        uses: ./.github/actions/common_setup
         with:
-          extra_nix_config: |
-            trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-            substituters = https://hydra.iohk.io https://cache.nixos.org/
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - name: Login to Cachix
-        uses: cachix/cachix-action@v8
-        with:
-          name: octopod
-          signingKey: ${{ secrets.CACHIX_SIGNING_KEY }}
-
-      - name: Build Github Action Docker Image
+      - name: Test
+        shell: bash
         run: |
-          nix-build -A compaRESTGithubAction -j auto -o image
+          $(nix-build -A test -j auto --no-out-link)/bin/compaREST-tests
 
-      - name: Log into Docker Hub
-        if: github.ref == 'refs/heads/master'
-        uses: docker/login-action@v1
+      - name: Build Linux static binary
+        shell: bash
+        run: |
+          cp $(nix-build -A compaRESTStaticBin -j auto --no-out-link)/bin/compaREST compaREST
+
+      - name: Upload compaREST Linux Binary
+        uses: actions/upload-artifact@v2
+        with:
+          name: compaREST-Linux
+          path: compaREST
+
+      - name: Build Docker Images
+        shell: bash
+        run: |
+          cp $(nix-build -A compaRESTGithubAction -j auto --no-out-link) compaREST-Github-Action-image.tar.gz
+          cp $(nix-build -A compaRESTImage -j auto --no-out-link) compaREST-image.tar.gz
+
+      - name: Upload compaREST Docker Github Action Image
+        uses: actions/upload-artifact@v2
+        with:
+          name: compaREST Github Action Docker Image
+          path: compaREST-Github-Action-image.tar.gz
+
+      - name: Upload compaREST Docker Image
+        uses: actions/upload-artifact@v2
+        with:
+          name: compaREST Docker Image
+          path: compaREST-image.tar.gz
+
+      - name: Install skopeo
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install skopeo
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v1.10.0
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - name: Upload Image to Docker Hub
-        if: github.ref == 'refs/heads/master'
+      - name: Push Nightly Docker Images to DockerHub
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+        shell: bash
         run: |
-          docker load -i image
-          docker push typeable/comparest-github-action:latest
+          skopeo copy docker-archive:$(nix-build -A compaRESTGithubAction -j auto --no-out-link) docker://typeable/comparest-github-action:nightly
+          skopeo copy docker-archive:$(nix-build -A compaRESTImage -j auto --no-out-link) docker://typeable/comparest:nightly
+
+      - name: Push Release Docker Images to DockerHub
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          skopeo copy docker-archive:$(nix-build -A compaRESTGithubAction -j auto --no-out-link) docker://typeable/comparest-github-action:${{ github.event.release.tag_name }}
+          skopeo copy docker-archive:$(nix-build -A compaRESTImage -j auto --no-out-link) docker://typeable/comparest:${{ github.event.release.tag_name }}
+
+      - name: Upload compaREST Github Action Docker Image to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@2.2.1
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: compaREST-Github-Action-image.tar.gz
+          asset_name: compaREST Github Action Docker Image
+          tag: ${{ github.ref }}
+
+      - name: Upload compaREST Docker Image to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@2.2.1
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: compaREST-image.tar.gz
+          asset_name: compaREST Docker Image
+          tag: ${{ github.ref }}
+
+      - name: Upload compaREST binary – Linux – x86 to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@2.2.1
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: compaREST
+          asset_name: compaREST binary – Linux – x86
+          tag: ${{ github.ref }}
+
+  macOS:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - name: Common setup
+        uses: ./.github/actions/common_setup
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build macOS binary bundle
+        run: |
+          cp -LR $(nix-build -A macOSCompaRESTBundle -j auto --no-out-link) compaREST
+
+      - name: Upload macOS compaREST bundle
+        uses: actions/upload-artifact@v2
+        with:
+          name: compaREST binary – macOS – x86
+          path: compaREST
+
+      - name: Upload compaREST binary – macOS – x86 to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@2.2.1
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: compaREST
+          asset_name: compaREST binary – macOS – x86
+          tag: ${{ github.ref }}
+
+  Linux-Windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: recursive
+
+      - name: Common setup
+        uses: ./.github/actions/common_setup
+        with:
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build Windows binary
+        run: |
+          cp -LR $(nix-build -A WindowsCompaRESTBin -j auto --no-out-link)/bin compaREST
+
+      - name: Upload Windows compaREST bundle
+        uses: actions/upload-artifact@v2
+        with:
+          name: compaREST binary – Windows
+          path: compaREST
+
+      - name: Upload compaREST binary – Windows to release
+        if: github.event_name == 'release'
+        uses: svenstaro/upload-release-action@2.2.1
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: compaREST
+          asset_name: compaREST binary – Windows
+          tag: ${{ github.ref }}
