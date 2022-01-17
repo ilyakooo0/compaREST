@@ -2,7 +2,7 @@
 
 `comparest` uses [PVP Versioning][1].
 
-## unreleased
+## 0.0.0.0
 
 * Initially created.
 
